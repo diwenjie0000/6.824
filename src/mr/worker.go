@@ -1,6 +1,3 @@
-//go:build (darwin && cgo) || linux
-// +build darwin,cgo linux
-
 // go:build (darwin && cgo) || linux
 package mr
 
@@ -16,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -23,6 +21,8 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+var uid int
 
 // ByKey for sorting by key.
 type ByKey []KeyValue
@@ -40,11 +40,27 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+func ping() {
+	args := PingArgs{uid}
+	reply := PingReply{}
+	for {
+		ok := call("Coordinator.HandlePing", &args, &reply)
+		if !ok {
+			//fmt.Printf("call ping task failed!\n")
+			return
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
 // main/mrworker.go calls this function.
 func Worker(mapFunc func(string, string) []KeyValue,
 	reduceFunc func(string, []string) string) {
+	uid = int(time.Now().Unix())
+	go ping()
 	for {
 		taskType, fileName, err := CallForTask()
+		fmt.Printf("%v %v\n", uid, fileName)
 		if err != nil {
 			return
 		}
@@ -66,7 +82,7 @@ func Worker(mapFunc func(string, string) []KeyValue,
 func doMapTasks(fileName string, mapf func(string, string) []KeyValue) error {
 	file, err := os.Open(fileName)
 	if err != nil {
-		log.Fatalf("cannot open %v", fileName)
+		log.Fatalf("map error cannot open %v", fileName)
 		return err
 	}
 	content, err := ioutil.ReadAll(file)
@@ -86,7 +102,7 @@ func doMapTasks(fileName string, mapf func(string, string) []KeyValue) error {
 		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
 			j++
 		}
-		oName := "mr-inter-" + strconv.Itoa(os.Getuid()) + "-" + strconv.Itoa(ihash(intermediate[i].Key)%NReduce)
+		oName := "mr-inter-" + strconv.Itoa(uid) + "-" + strconv.Itoa(ihash(intermediate[i].Key)%NReduce)
 		fileNameMap[ihash(intermediate[i].Key)%NReduce] = oName
 		oFile, _ := os.OpenFile(oName, os.O_CREATE|os.O_APPEND|os.O_RDWR, os.ModeAppend|os.ModePerm)
 		for k := i; k < j; k++ {
@@ -153,7 +169,7 @@ func doReduceTasks(fileNames []string, reducef func(string, []string) string) er
 // the RPC argument
 // and reply types are defined in rpc.go
 func CallForCompleteMapTask(fileNameMap map[int]string) {
-	args := MapTaskComplete{os.Getuid(), fileNameMap}
+	args := MapTaskComplete{uid, fileNameMap}
 	reply := TaskDistribute{}
 	ok := call("Coordinator.CompleteMapTask", &args, &reply)
 	if !ok {
@@ -161,7 +177,7 @@ func CallForCompleteMapTask(fileNameMap map[int]string) {
 	}
 }
 func CallForCompleteReduceTask() {
-	args := ReduceTaskComplete{os.Getuid()}
+	args := ReduceTaskComplete{uid}
 	reply := TaskDistribute{}
 	ok := call("Coordinator.CompleteReduceTask", &args, &reply)
 	if !ok {
@@ -169,13 +185,13 @@ func CallForCompleteReduceTask() {
 	}
 }
 func CallForTask() (int, string, error) {
-	args := TaskApply{os.Getuid()}
+	args := TaskApply{uid}
 	reply := TaskDistribute{}
 	ok := call("Coordinator.TaskDistribute", &args, &reply)
 	if ok {
 		return reply.TaskType, reply.FileName, nil
 	} else {
-		//fmt.Printf("call for tasks failed\n")
+		fmt.Printf("call for tasks failed\n")
 	}
 	return 0, "", errors.New("分配任务失败")
 }

@@ -37,6 +37,11 @@ type TaskDistribute struct {
 	TaskType int
 	FileName string
 }
+type PingArgs struct {
+	WorkerId int
+}
+type PingReply struct {
+}
 
 // Add your RPC definitions here.
 
