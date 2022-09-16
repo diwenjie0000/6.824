@@ -49,7 +49,7 @@ func ping() {
 			//fmt.Printf("call ping task failed!\n")
 			return
 		}
-		time.Sleep(5 * time.Second)
+		time.Sleep(1 * time.Second)
 	}
 }
 
@@ -62,20 +62,25 @@ func Worker(mapFunc func(string, string) []KeyValue,
 		taskType, fileName, err := CallForTask()
 		fmt.Printf("%v %v\n", uid, fileName)
 		if err != nil {
-			return
-		}
-		if taskType == mapT {
-			err := doMapTasks(fileName, mapFunc)
-			if err != nil {
-				return
-			}
+			time.Sleep(1 * time.Second)
 		} else {
-			err := doReduceTasks(strings.Fields(fileName), reduceFunc)
-			if err != nil {
-				return
+			//if taskType == mapT {
+			//	err := doMapTasks(fileName, mapFunc)
+			//	if err != nil {
+			//		return
+			//	}
+			//} else {
+			//	err := doReduceTasks(strings.Fields(fileName), reduceFunc)
+			//	if err != nil {
+			//		return
+			//	}
+			//}
+			if taskType == mapT {
+				doMapTasks(fileName, mapFunc)
+			} else {
+				doReduceTasks(strings.Fields(fileName), reduceFunc)
 			}
 		}
-
 	}
 
 }
@@ -169,7 +174,7 @@ func doReduceTasks(fileNames []string, reducef func(string, []string) string) er
 // the RPC argument
 // and reply types are defined in rpc.go
 func CallForCompleteMapTask(fileNameMap map[int]string) {
-	args := MapTaskComplete{uid, fileNameMap}
+	args := MapTaskComplete{uid}
 	reply := TaskDistribute{}
 	ok := call("Coordinator.CompleteMapTask", &args, &reply)
 	if !ok {
@@ -188,12 +193,13 @@ func CallForTask() (int, string, error) {
 	args := TaskApply{uid}
 	reply := TaskDistribute{}
 	ok := call("Coordinator.TaskDistribute", &args, &reply)
-	if ok {
+	println(reply.TaskType, reply.FileName)
+	if ok && reply.FileName != "" {
 		return reply.TaskType, reply.FileName, nil
 	} else {
-		fmt.Printf("call for tasks failed\n")
+		return 0, "", errors.New("call for tasks failed")
+
 	}
-	return 0, "", errors.New("分配任务失败")
 }
 
 func CallExample() {

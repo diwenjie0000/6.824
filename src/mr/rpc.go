@@ -27,8 +27,7 @@ type TaskApply struct {
 	WorkerId int
 }
 type MapTaskComplete struct {
-	WorkerId  int
-	FileNames map[int]string
+	WorkerId int
 }
 type ReduceTaskComplete struct {
 	WorkerId int
