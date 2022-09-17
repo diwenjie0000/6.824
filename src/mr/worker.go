@@ -60,9 +60,10 @@ func Worker(mapFunc func(string, string) []KeyValue,
 	go ping()
 	for {
 		taskType, fileName, err := CallForTask()
-		fmt.Printf("%v %v\n", uid, fileName)
+		fmt.Printf("%v %v %v\n", uid, fileName, err)
 		if err != nil {
-			time.Sleep(1 * time.Second)
+			fmt.Printf("%v", err)
+			return
 		} else {
 			//if taskType == mapT {
 			//	err := doMapTasks(fileName, mapFunc)
@@ -77,8 +78,10 @@ func Worker(mapFunc func(string, string) []KeyValue,
 			//}
 			if taskType == mapT {
 				doMapTasks(fileName, mapFunc)
-			} else {
+			} else if taskType == reduceT {
 				doReduceTasks(strings.Fields(fileName), reduceFunc)
+			} else {
+				time.Sleep(1 * time.Second)
 			}
 		}
 	}
@@ -198,7 +201,6 @@ func CallForTask() (int, string, error) {
 		return reply.TaskType, reply.FileName, nil
 	} else {
 		return 0, "", errors.New("call for tasks failed")
-
 	}
 }
 

@@ -21,25 +21,34 @@ const (
 const (
 	mapT = iota
 	reduceT
+	faultT
 )
 
 const NReduce = 10
 
 type Task struct {
-	filename string
-	state    int
-	wid      int
+	taskId    int
+	taskType  int            //mapT, reduceT
+	filenames map[int]string //if taskType==mapT, len(filenames)==1
+	state     int            //idle, inProgress, completed
+	wid       int
 }
 
 type Coordinator struct {
 	// Your definitions here.
 	totalMapTasks       int
+	distributedMapTasks int
 	finishedMapTasks    int
-	totalReduceTasks    int
-	finishedReduceTasks int
+
+	totalReduceTasks       int
+	distributedReduceTasks int
+	finishedReduceTasks    int
+
+	mapTaskChan    chan int
+	reduceTaskChan chan int
 
 	mapTasks    []Task
-	reduceTasks [][]Task
+	reduceTasks []Task
 
 	workerDistributedMapTask    map[int]int //i->j worker_i distributed map tasks
 	workerDistributedReduceTask map[int]int
@@ -59,48 +68,56 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) TaskDistribute(args *TaskApply, reply *TaskDistribute) error {
+	println(122212121)
 	c.lock.Lock()
-	defer c.lock.Unlock()
-
 	if c.totalMapTasks > c.finishedMapTasks {
-		for i := 0; i < c.totalMapTasks; i++ {
-			if c.mapTasks[i].state == idle {
-				c.workerConn[args.WorkerId] = time.Now()
-				reply.TaskType = mapT
-				reply.FileName = c.mapTasks[i].filename
-				if c.mapTasks[i].filename == "" {
-					println(i)
-				}
-				c.mapTasks[i].state = inProgress
-				c.mapTasks[i].wid = args.WorkerId
-				c.workerDistributedMapTask[args.WorkerId] = i
-				return nil
-			}
+		println(000000000)
+		if c.distributedMapTasks == c.totalMapTasks {
+			reply.TaskType = faultT
+			c.lock.Unlock()
+			return nil
 		}
-		return errors.New("mapTasks still in progress")
+		println(11111111111)
+		c.distributedMapTasks++
+		c.lock.Unlock()
+		println(2222222222)
+		idx := <-c.mapTaskChan
+		c.lock.Lock()
+		c.workerConn[args.WorkerId] = time.Now()
+		reply.TaskType = mapT
+		reply.FileName = ""
+		for _, value := range c.mapTasks[idx].filenames {
+			reply.FileName += value
+		}
+		c.mapTasks[idx].state = inProgress
+		c.mapTasks[idx].wid = args.WorkerId
+		c.workerDistributedMapTask[args.WorkerId] = c.mapTasks[idx].taskId
+		c.lock.Unlock()
+		return nil
 	} else if c.totalReduceTasks > c.finishedReduceTasks {
-		for i := 0; i < c.totalReduceTasks; i++ {
-			if c.reduceTasks[i][0].state == idle { //reduceTasks[i][:]一次性分配
-				c.workerConn[args.WorkerId] = time.Now()
-				reply.TaskType = reduceT
-				reply.FileName = ""
-				fileNames := make(map[string]int)
-				for index, value := range c.reduceTasks[i] {
-					fileNames[value.filename] = 1
-					c.reduceTasks[i][index].state = inProgress
-					c.reduceTasks[i][index].wid = args.WorkerId
-				}
-				for key := range fileNames {
-					reply.FileName += key + " "
-				}
-				c.workerDistributedReduceTask[args.WorkerId] = i
-				return nil
-			}
+		c.lock.Lock()
+		if c.distributedReduceTasks == c.totalReduceTasks {
+			reply.TaskType = faultT
+			c.lock.Unlock()
+			return nil
 		}
-		return errors.New("reduceTasks still in progress")
+		c.distributedReduceTasks++
+		c.lock.Unlock()
+		idx := <-c.reduceTaskChan
+		c.lock.Lock()
+		c.workerConn[args.WorkerId] = time.Now()
+		reply.TaskType = reduceT
+		reply.FileName = ""
+		for _, value := range c.reduceTasks[idx].filenames {
+			reply.FileName += value + " "
+		}
+		c.reduceTasks[idx].state = inProgress
+		c.reduceTasks[idx].wid = args.WorkerId
+		c.workerDistributedReduceTask[args.WorkerId] = c.reduceTasks[idx].taskId
+		c.lock.Unlock()
+		return nil
 	}
-	return errors.New("")
-	//return errors.New("failed to distribute tasks ")
+	return errors.New("all tasks completed")
 }
 
 func (c *Coordinator) CompleteMapTask(args *MapTaskComplete, reply *TaskDistribute) error {
@@ -114,21 +131,26 @@ func (c *Coordinator) CompleteMapTask(args *MapTaskComplete, reply *TaskDistribu
 	c.mapTasks[taskId].state = completed
 	delete(c.workerDistributedMapTask, args.WorkerId)
 
+	// N个reduce任务的文件名都增加上tid产生的中间文件
 	for i := 0; i < NReduce; i++ {
-		c.reduceTasks[i][taskId].filename = "mr-inter-" + strconv.Itoa(args.WorkerId) + "-" + strconv.Itoa(i)
+		c.reduceTasks[i].filenames[args.WorkerId] = "mr-inter-" + strconv.Itoa(args.WorkerId) + "-" + strconv.Itoa(i)
 	}
 	c.finishedMapTasks++
+	fmt.Printf("%v %v\n", args.WorkerId, c.finishedMapTasks)
+	if c.finishedMapTasks == c.totalMapTasks {
+		fmt.Printf("all finished\n")
+		for i := 0; i < c.totalReduceTasks; i++ {
+			c.reduceTaskChan <- i
+		}
+	}
 	return nil
 }
 
 func (c *Coordinator) CompleteReduceTask(args *ReduceTaskComplete, reply *TaskDistribute) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-
 	taskId := c.workerDistributedReduceTask[args.WorkerId]
-	for i := 0; i < c.totalMapTasks; i++ {
-		c.reduceTasks[taskId][i].state = completed
-	}
+	c.reduceTasks[taskId].state = completed
 	delete(c.workerDistributedReduceTask, args.WorkerId)
 	c.finishedReduceTasks++
 	return nil
@@ -169,8 +191,9 @@ func (c *Coordinator) HandlePing(args *PingArgs, reply *PingReply) error {
 }
 
 func (c *Coordinator) CheckConn() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 	for {
-		c.lock.Lock()
 		timeNow := time.Now()
 		for key, value := range c.workerConn {
 			if timeNow.Sub(value).Seconds() > 3 {
@@ -180,15 +203,19 @@ func (c *Coordinator) CheckConn() {
 				if ok1 {
 					if c.mapTasks[distributedMapTask].state == completed {
 						for i := 0; i < c.totalReduceTasks; i++ {
-							c.reduceTasks[i][distributedReduceTask] = Task{}
+							delete(c.reduceTasks[i].filenames, key)
 						}
 						c.finishedMapTasks--
+						c.mapTaskChan <- distributedMapTask
 					}
 					c.mapTasks[distributedMapTask].state = idle
+					c.distributedMapTasks--
 				}
 				if ok2 {
-					if c.reduceTasks[distributedReduceTask][0].state == inProgress {
-						c.reduceTasks[distributedReduceTask][0].state = idle
+					if c.reduceTasks[distributedReduceTask].state == inProgress {
+						c.reduceTasks[distributedReduceTask].state = idle
+						c.reduceTaskChan <- distributedReduceTask
+						c.distributedReduceTasks--
 					}
 				}
 				delete(c.workerConn, key)
@@ -196,7 +223,6 @@ func (c *Coordinator) CheckConn() {
 				fmt.Printf("%v alive\n", key)
 			}
 		}
-		c.lock.Unlock()
 		time.Sleep(1 * time.Second)
 	}
 }
@@ -222,21 +248,28 @@ func (c *Coordinator) CheckConn() {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
 		totalMapTasks:               len(files),
+		distributedMapTasks:         0,
 		finishedMapTasks:            0,
 		totalReduceTasks:            nReduce,
+		distributedReduceTasks:      0,
 		finishedReduceTasks:         0,
+		mapTaskChan:                 make(chan int, len(files)),
+		reduceTaskChan:              make(chan int, nReduce),
 		mapTasks:                    make([]Task, len(files)),
-		reduceTasks:                 make([][]Task, nReduce),
+		reduceTasks:                 make([]Task, nReduce),
 		workerDistributedMapTask:    make(map[int]int),
 		workerDistributedReduceTask: make(map[int]int),
 		workerConn:                  make(map[int]time.Time),
 	}
+
 	for i := 0; i < c.totalReduceTasks; i++ {
-		c.reduceTasks[i] = make([]Task, c.totalMapTasks)
+		c.reduceTasks[i].filenames = make(map[int]string, c.totalReduceTasks)
 	}
-	// Your code here.
+
 	for i := 0; i < c.totalMapTasks; i++ {
-		c.mapTasks[i].filename = files[i]
+		c.mapTasks[i] = Task{taskId: i, taskType: mapT, filenames: make(map[int]string), state: idle}
+		c.mapTasks[i].filenames[0] = files[i]
+		c.mapTaskChan <- i
 	}
 	c.server()
 	return &c
