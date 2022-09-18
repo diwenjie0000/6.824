@@ -28,11 +28,14 @@ type TaskApply struct {
 }
 type MapTaskComplete struct {
 	WorkerId int
+	TaskId   int
 }
 type ReduceTaskComplete struct {
 	WorkerId int
+	TaskId   int
 }
 type TaskDistribute struct {
+	TaskId   int
 	TaskType int
 	FileName string
 }

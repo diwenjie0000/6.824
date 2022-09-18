@@ -40,54 +40,23 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-func ping() {
-	args := PingArgs{uid}
-	reply := PingReply{}
-	for {
-		ok := call("Coordinator.HandlePing", &args, &reply)
-		if !ok {
-			//fmt.Printf("call ping task failed!\n")
-			return
-		}
-		time.Sleep(1 * time.Second)
-	}
-}
-
-// main/mrworker.go calls this function.
+// Worker main/mrworker.go calls this function.
 func Worker(mapFunc func(string, string) []KeyValue,
 	reduceFunc func(string, []string) string) {
 	uid = int(time.Now().Unix())
-	go ping()
 	for {
-		taskType, fileName, err := CallForTask()
-		fmt.Printf("%v %v %v\n", uid, fileName, err)
-		if err != nil {
-			fmt.Printf("%v", err)
-			return
-		} else {
-			//if taskType == mapT {
-			//	err := doMapTasks(fileName, mapFunc)
-			//	if err != nil {
-			//		return
-			//	}
-			//} else {
-			//	err := doReduceTasks(strings.Fields(fileName), reduceFunc)
-			//	if err != nil {
-			//		return
-			//	}
-			//}
+		taskType, tid, fileName, err := CallForTask()
+		if err == nil {
 			if taskType == mapT {
-				doMapTasks(fileName, mapFunc)
+				doMapTasks(tid, fileName, mapFunc)
 			} else if taskType == reduceT {
-				doReduceTasks(strings.Fields(fileName), reduceFunc)
-			} else {
-				time.Sleep(1 * time.Second)
+				doReduceTasks(tid, strings.Fields(fileName), reduceFunc)
 			}
 		}
 	}
 
 }
-func doMapTasks(fileName string, mapf func(string, string) []KeyValue) error {
+func doMapTasks(tid int, fileName string, mapf func(string, string) []KeyValue) error {
 	file, err := os.Open(fileName)
 	if err != nil {
 		log.Fatalf("map error cannot open %v", fileName)
@@ -110,7 +79,7 @@ func doMapTasks(fileName string, mapf func(string, string) []KeyValue) error {
 		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
 			j++
 		}
-		oName := "mr-inter-" + strconv.Itoa(uid) + "-" + strconv.Itoa(ihash(intermediate[i].Key)%NReduce)
+		oName := "mr-inter-" + strconv.Itoa(uid) + "-" + strconv.Itoa(tid) + "-" + strconv.Itoa(ihash(intermediate[i].Key)%NReduce)
 		fileNameMap[ihash(intermediate[i].Key)%NReduce] = oName
 		oFile, _ := os.OpenFile(oName, os.O_CREATE|os.O_APPEND|os.O_RDWR, os.ModeAppend|os.ModePerm)
 		for k := i; k < j; k++ {
@@ -119,10 +88,9 @@ func doMapTasks(fileName string, mapf func(string, string) []KeyValue) error {
 		oFile.Close()
 		i = j
 	}
-	CallForCompleteMapTask(fileNameMap)
-	return nil
+	return CallForCompleteMapTask(uid, tid)
 }
-func doReduceTasks(fileNames []string, reducef func(string, []string) string) error {
+func doReduceTasks(tid int, fileNames []string, reducef func(string, []string) string) error {
 	intermediate := ByKey{}
 	for _, fileName := range fileNames {
 		file, err := os.Open(fileName)
@@ -168,39 +136,42 @@ func doReduceTasks(fileNames []string, reducef func(string, []string) string) er
 		oFile.Close()
 		i = j
 	}
-	CallForCompleteReduceTask()
-	return nil
+	return CallForCompleteReduceTask(uid, tid)
 }
 
 // example function to show how to make an RPC call to the coordinator.
 //
 // the RPC argument
 // and reply types are defined in rpc.go
-func CallForCompleteMapTask(fileNameMap map[int]string) {
-	args := MapTaskComplete{uid}
+func CallForCompleteMapTask(wid int, tid int) error {
+	args := MapTaskComplete{WorkerId: wid, TaskId: tid}
 	reply := TaskDistribute{}
 	ok := call("Coordinator.CompleteMapTask", &args, &reply)
 	if !ok {
 		//fmt.Printf("call complete map task failed!\n")
+		return errors.New("fail")
 	}
+	return nil
 }
-func CallForCompleteReduceTask() {
-	args := ReduceTaskComplete{uid}
+func CallForCompleteReduceTask(wid int, tid int) error {
+	args := ReduceTaskComplete{WorkerId: wid, TaskId: tid}
 	reply := TaskDistribute{}
 	ok := call("Coordinator.CompleteReduceTask", &args, &reply)
 	if !ok {
 		//fmt.Printf("call complete reduce task failed!\n")
+		return errors.New("fail")
 	}
+	return nil
 }
-func CallForTask() (int, string, error) {
+func CallForTask() (int, int, string, error) {
 	args := TaskApply{uid}
 	reply := TaskDistribute{}
 	ok := call("Coordinator.TaskDistribute", &args, &reply)
 	println(reply.TaskType, reply.FileName)
 	if ok && reply.FileName != "" {
-		return reply.TaskType, reply.FileName, nil
+		return reply.TaskType, reply.TaskId, reply.FileName, nil
 	} else {
-		return 0, "", errors.New("call for tasks failed")
+		return 0, 0, "", errors.New("call for tasks failed")
 	}
 }
 
