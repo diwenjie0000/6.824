@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io/ioutil"
-	"log"
 	"net/rpc"
 	"os"
 	"sort"
@@ -52,6 +51,8 @@ func Worker(mapFunc func(string, string) []KeyValue,
 			} else if taskType == reduceT {
 				doReduceTasks(tid, strings.Fields(fileName), reduceFunc)
 			}
+		} else {
+			return
 		}
 	}
 
@@ -59,12 +60,12 @@ func Worker(mapFunc func(string, string) []KeyValue,
 func doMapTasks(tid int, fileName string, mapf func(string, string) []KeyValue) error {
 	file, err := os.Open(fileName)
 	if err != nil {
-		log.Fatalf("map error cannot open %v", fileName)
+		//log.Fatalf("map error cannot open %v", fileName)
 		return err
 	}
 	content, err := ioutil.ReadAll(file)
 	if err != nil {
-		log.Fatalf("cannot read %v", fileName)
+		//log.Fatalf("cannot read %v", fileName)
 		return err
 	}
 	file.Close()
@@ -95,20 +96,20 @@ func doReduceTasks(tid int, fileNames []string, reducef func(string, []string) s
 	for _, fileName := range fileNames {
 		file, err := os.Open(fileName)
 		if err != nil {
-			log.Fatalf("cannot open %v", fileName)
-			return err
-		}
-		fileScanner := bufio.NewScanner(file)
+			//log.Fatalf("cannot open %v", fileName)
+		} else {
+			fileScanner := bufio.NewScanner(file)
 
-		for fileScanner.Scan() {
-			context := strings.Fields(fileScanner.Text())
-			intermediate = append(intermediate, KeyValue{context[0], context[1]})
-		}
+			for fileScanner.Scan() {
+				context := strings.Fields(fileScanner.Text())
+				intermediate = append(intermediate, KeyValue{context[0], context[1]})
+			}
 
-		if err := fileScanner.Err(); err != nil {
-			log.Fatalf("Error while reading file: %s", err)
+			if err := fileScanner.Err(); err != nil {
+				//log.Fatalf("Error while reading file: %s", err)
+			}
+			file.Close()
 		}
-		file.Close()
 	}
 
 	sort.Sort(intermediate)
@@ -167,7 +168,6 @@ func CallForTask() (int, int, string, error) {
 	args := TaskApply{uid}
 	reply := TaskDistribute{}
 	ok := call("Coordinator.TaskDistribute", &args, &reply)
-	println(reply.TaskType, reply.FileName)
 	if ok && reply.FileName != "" {
 		return reply.TaskType, reply.TaskId, reply.FileName, nil
 	} else {
@@ -207,7 +207,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
-		log.Fatal("dialing:", err)
+		//log.Fatal("dialing:", err)
 	}
 	defer c.Close()
 
