@@ -2,8 +2,6 @@ package mr
 
 import (
 	"errors"
-	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -51,8 +49,7 @@ type Coordinator struct {
 	mapTasks    []Task
 	reduceTasks []Task
 
-	workerDistributedMapTask    map[int]map[int]int //i->j worker_i distributed map tasks
-	workerDistributedReduceTask map[int]map[int]int
+	done bool
 
 	lock sync.RWMutex
 }
@@ -72,16 +69,14 @@ func (c *Coordinator) isTaskCompleted(tid int, ttype int) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if ttype == mapT {
-		if c.mapTasks[tid].taskType != completed {
+		if c.mapTasks[tid].state != completed {
 			c.mapTasks[tid].state = idle
 			c.taskDistributedChan <- c.mapTasks[tid]
-			delete(c.workerDistributedMapTask[c.mapTasks[tid].wid], tid)
 		}
 	} else {
-		if c.reduceTasks[tid].taskType != completed {
+		if c.reduceTasks[tid].state != completed {
 			c.reduceTasks[tid].state = idle
 			c.taskDistributedChan <- c.reduceTasks[tid]
-			delete(c.workerDistributedReduceTask[c.mapTasks[tid].wid], tid)
 		}
 	}
 }
@@ -90,8 +85,10 @@ func (c *Coordinator) TaskDistribute(args *TaskApply, reply *TaskDistribute) err
 	t := <-c.taskDistributedChan
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	if c.done {
+		return errors.New("end")
+	}
 	if t.taskType == mapT {
-		//c.distributedMapTasks++
 		idx := t.taskId
 		reply.TaskType = mapT
 		reply.FileName = ""
@@ -101,15 +98,9 @@ func (c *Coordinator) TaskDistribute(args *TaskApply, reply *TaskDistribute) err
 		}
 		c.mapTasks[idx].state = inProgress
 		c.mapTasks[idx].wid = args.WorkerId
-		_, ok := c.workerDistributedMapTask[args.WorkerId]
-		if !ok {
-			c.workerDistributedMapTask[args.WorkerId] = make(map[int]int)
-		}
-		c.workerDistributedMapTask[args.WorkerId][c.mapTasks[idx].taskId] = 1
 		go c.isTaskCompleted(t.taskId, t.taskType)
 		return nil
 	} else {
-		//c.distributedReduceTasks++
 		idx := t.taskId
 		reply.TaskType = reduceT
 		reply.FileName = ""
@@ -119,11 +110,6 @@ func (c *Coordinator) TaskDistribute(args *TaskApply, reply *TaskDistribute) err
 		}
 		c.reduceTasks[idx].state = inProgress
 		c.reduceTasks[idx].wid = args.WorkerId
-		_, ok := c.workerDistributedReduceTask[args.WorkerId]
-		if !ok {
-			c.workerDistributedReduceTask[args.WorkerId] = make(map[int]int)
-		}
-		c.workerDistributedReduceTask[args.WorkerId][c.reduceTasks[idx].taskId] = 1
 		go c.isTaskCompleted(t.taskId, t.taskType)
 		return nil
 	}
@@ -133,22 +119,21 @@ func (c *Coordinator) TaskDistribute(args *TaskApply, reply *TaskDistribute) err
 func (c *Coordinator) CompleteMapTask(args *MapTaskComplete, reply *TaskDistribute) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	_, ok := c.workerDistributedMapTask[args.WorkerId][args.TaskId]
-	if !ok {
+	if args.WorkerId != c.mapTasks[args.TaskId].wid {
 		return errors.New(strconv.Itoa(args.TaskId) + "already is re-distributed")
 	}
 	taskId := args.TaskId
 	c.mapTasks[taskId].state = completed
-	//delete(c.workerDistributedMapTask, args.WorkerId)
-
-	// N个reduce任务的文件名都增加上tid产生的中间文件
-	for i := 0; i < NReduce; i++ {
-		c.reduceTasks[i].filenames[args.TaskId] = "mr-inter-" + strconv.Itoa(args.WorkerId) + "-" + strconv.Itoa(args.TaskId) + "-" + strconv.Itoa(i)
-	}
 	c.finishedMapTasks++
-	fmt.Printf("%v %v\n", args.WorkerId, c.finishedMapTasks)
+	//fmt.Printf("%v %v\n", args.WorkerId, c.finishedMapTasks)
 	if c.finishedMapTasks == c.totalMapTasks {
-		fmt.Printf("all finished\n")
+		for i := 0; i < NReduce; i++ {
+			for j := 0; j < c.totalMapTasks; j++ {
+				c.reduceTasks[i].filenames[c.mapTasks[j].taskId] = "mr-inter-" + strconv.Itoa(c.mapTasks[j].wid) + "-" + strconv.Itoa(c.mapTasks[j].taskId) + "-" + strconv.Itoa(i)
+			}
+		}
+
+		//fmt.Printf("all map task finished\n")
 		for i := 0; i < c.totalReduceTasks; i++ {
 			c.taskDistributedChan <- c.reduceTasks[i]
 		}
@@ -159,14 +144,15 @@ func (c *Coordinator) CompleteMapTask(args *MapTaskComplete, reply *TaskDistribu
 func (c *Coordinator) CompleteReduceTask(args *ReduceTaskComplete, reply *TaskDistribute) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	_, ok := c.workerDistributedReduceTask[args.WorkerId][args.TaskId]
-	if !ok {
+	if args.WorkerId != c.reduceTasks[args.TaskId].wid {
 		return errors.New(strconv.Itoa(args.TaskId) + "already is re-distributed")
 	}
 	taskId := args.TaskId
 	c.reduceTasks[taskId].state = completed
-	//delete(c.workerDistributedReduceTask, args.WorkerId)
 	c.finishedReduceTasks++
+	if c.totalReduceTasks == c.finishedReduceTasks {
+		c.done = true
+	}
 	return nil
 }
 
@@ -179,7 +165,7 @@ func (c *Coordinator) server() {
 	os.Remove(sockname)
 	l, e := net.Listen("unix", sockname)
 	if e != nil {
-		log.Fatal("listen error:", e)
+		//log.Fatal("listen error:", e)
 	}
 	go http.Serve(l, nil)
 }
@@ -190,79 +176,11 @@ func (c *Coordinator) Done() bool {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 	ret := false
-	if c.finishedMapTasks == c.totalMapTasks && c.finishedReduceTasks == c.totalReduceTasks {
+	if c.done {
 		ret = true
 	}
 	return ret
 }
-
-//func (c *Coordinator) HandlePing(args *PingArgs, reply *PingReply) error {
-//	c.lock.Lock()
-//	defer c.lock.Unlock()
-//	c.workerConn[args.WorkerId] = time.Now()
-//	return nil
-//}
-
-//func (c *Coordinator) CheckConn() {
-//	for {
-//		c.lock.Lock()
-//		timeNow := time.Now()
-//		for key, value := range c.workerConn {
-//			if timeNow.Sub(value).Seconds() > 10 {
-//				distributedMapTasks, ok1 := c.workerDistributedMapTask[key]
-//				distributedReduceTasks, ok2 := c.workerDistributedReduceTask[key]
-//				fmt.Printf("%v failed\n", key)
-//				if ok1 && c.finishedMapTasks < c.totalMapTasks {
-//					for i := 0; i < c.totalReduceTasks; i++ {
-//						delete(c.reduceTasks[i].filenames, key)
-//					}
-//					for idx := range distributedMapTasks {
-//						if c.mapTasks[idx].state == completed {
-//							c.finishedMapTasks--
-//						}
-//						println("re-distribute map task:", c.mapTasks[idx].taskId)
-//						c.mapTasks[idx].state = idle
-//						c.taskDistributedChan <- c.mapTasks[idx]
-//						//c.distributedMapTasks--
-//					}
-//					delete(c.workerDistributedMapTask, key)
-//				}
-//				if ok2 && c.finishedReduceTasks < c.totalReduceTasks {
-//					for idx := range distributedReduceTasks {
-//						fmt.Printf("leave reduce task %v\n", idx)
-//						if c.reduceTasks[idx].state == inProgress {
-//							c.reduceTasks[idx].state = idle
-//							c.taskDistributedChan <- c.reduceTasks[idx]
-//							//c.distributedReduceTasks--
-//						}
-//					}
-//					delete(c.workerDistributedReduceTask, key)
-//				}
-//				delete(c.workerConn, key)
-//			} else {
-//				fmt.Printf("%v alive\n", key)
-//			}
-//		}
-//		c.lock.Unlock()
-//		time.Sleep(5 * time.Second)
-//
-//	}
-//}
-
-//func callClient(clientId int, rpcname string, args interface{}, reply interface{}) bool {
-//	sockname := "/var/tmp/824-mr-" + strconv.Itoa(clientId)
-//	c, err := rpc.DialHTTP("unix", sockname)
-//	if err != nil {
-//		log.Fatal("dialing:", err)
-//	}
-//	defer c.Close()
-//
-//	err = c.Call(rpcname, args, reply)
-//	if err == nil {
-//		return true
-//	}
-//	return false
-//}
 
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
@@ -273,13 +191,12 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		//distributedMapTasks:         0,
 		finishedMapTasks: 0,
 		totalReduceTasks: nReduce,
+		done:             false,
 		//distributedReduceTasks:      0,
-		finishedReduceTasks:         0,
-		taskDistributedChan:         make(chan Task, len(files)+nReduce),
-		mapTasks:                    make([]Task, len(files)),
-		reduceTasks:                 make([]Task, nReduce),
-		workerDistributedMapTask:    make(map[int]map[int]int),
-		workerDistributedReduceTask: make(map[int]map[int]int),
+		finishedReduceTasks: 0,
+		taskDistributedChan: make(chan Task, len(files)+nReduce),
+		mapTasks:            make([]Task, len(files)),
+		reduceTasks:         make([]Task, nReduce),
 	}
 
 	for i := 0; i < c.totalReduceTasks; i++ {
