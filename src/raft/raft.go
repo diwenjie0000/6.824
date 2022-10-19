@@ -20,6 +20,7 @@ package raft
 import (
 	"6.824/labgob"
 	"bytes"
+	"fmt"
 	"math/rand"
 	"time"
 
@@ -29,6 +30,14 @@ import (
 
 	//	"6.824/labgob"
 	"6.824/labrpc"
+)
+
+const heartbeatTimeout = 100 * time.Millisecond
+const electionTimeout = 500 * time.Millisecond
+const (
+	follower = iota
+	candidate
+	leader
 )
 
 // as each Raft peer becomes aware that successive log entries are
@@ -54,15 +63,21 @@ type ApplyMsg struct {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	mu        sync.RWMutex        // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
+	muState sync.Mutex
+	state   int //state of server
+
 	muForHeartbeat sync.Mutex
 	heartbeatExist bool
-	heartbeatTerm  int
+
+	//stop candidate
+	stopCandidate chan bool
+	becomeLeader  chan bool
 
 	//Persistent state
 	currenTerm int        //latest term server has seen
@@ -74,8 +89,8 @@ type Raft struct {
 	lastApplied int //index of highest log entry applied to state machine
 
 	//Leader only volatile state
-	nextIndex  []int //for each server, index of the next log entry to send to that server
-	matchIndex []int //for each server, index of highest log entry known to be replicated on server
+	nextIndex  int //for each server, index of the next log entry to send to that server
+	matchIndex int //for each server, index of highest log entry known to be replicated on server
 }
 
 type LogEntry struct {
@@ -89,8 +104,16 @@ type Command struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	term := rf.currenTerm
-	isLeader := rf.votedFor == rf.me
+	rf.mu.RLock()
+	defer rf.mu.RUnlock()
+	var term int
+	if rf.currenTerm == 0 {
+		term = 1
+	} else {
+		term = rf.currenTerm
+	}
+
+	isLeader := rf.state == leader
 	return term, isLeader
 }
 
@@ -188,75 +211,152 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) candidateState(thisTerm int) {
+	rf.muState.Lock()
+	rf.state = candidate
+	rf.muState.Unlock()
+
+	rf.mu.Lock()
+	rf.currenTerm = thisTerm + 1
+	fmt.Println("term ", rf.currenTerm, " ", rf.me, " start election")
+	rf.votedFor = rf.me
+	rf.stopCandidate = make(chan bool)
+	rf.becomeLeader = make(chan bool)
+	rf.mu.Unlock()
+
+	vote := make(chan bool, len(rf.peers))
+	for key, _ := range rf.peers {
+		if key != rf.me {
+			go func(key int) {
+				rf.mu.RLock()
+				defer rf.mu.RUnlock()
+				args := RequestVoteArgs{
+					Term:         rf.currenTerm,
+					CandidateId:  rf.me,
+					LastLogIndex: len(rf.log),
+					LastLogTerm:  0,
+				}
+				if len(rf.log) > 0 {
+					args.LastLogTerm = rf.log[len(rf.log)-1].term
+				}
+				reply := RequestVoteReply{
+					Term:        0,
+					VoteGranted: false,
+				}
+				fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " request a vote from ", key)
+				rf.sendRequestVote(key, &args, &reply)
+				if reply.VoteGranted {
+					vote <- true
+					fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 vote")
+				} else {
+					vote <- false
+					fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 refuse")
+				}
+			}(key)
+		}
+	}
+
+	go func(vote chan bool) {
+		num := float32(rand.Intn(10))*0.1 + 1 // 1~2 times basic timeout
+		select {
+		case <-rf.stopCandidate: //receive stop candidate
+			close(vote)
+			go rf.followerState()
+		case <-rf.becomeLeader:
+		case <-time.After(time.Duration(num) * electionTimeout): // set election timeout to close vote chan
+			close(vote)
+			rf.mu.RLock()
+			go rf.candidateState(rf.currenTerm - 1)
+			rf.mu.RUnlock()
+		}
+	}(vote)
+
+	//count the result of voting, and the chan guarantee the sync
+	voteGrantedCnt := 1 // vote for itself
+	needVote := float32(len(rf.peers)) / 2
+	voteCnt := 1
+	for result := range vote {
+		if result == true {
+			voteGrantedCnt++
+		}
+		if float32(voteGrantedCnt) > needVote {
+			rf.becomeLeader <- true
+			go rf.leaderState()
+			return
+		}
+		voteCnt++
+		if voteCnt == len(rf.peers) {
+			close(vote)
+		}
+	}
+
+}
+
+func (rf *Raft) followerState() {
+	rf.mu.Lock()
+	rf.state = follower
+	rf.mu.Unlock()
+	go rf.ticker()
+}
+
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	rf.heartbeatExist = true
 	for rf.killed() == false {
-		time.Sleep(time.Duration(0.5+float32(rand.Intn(5))*0.1) * time.Second)
+		num := float32(rand.Intn(10))*0.1 + 1 // 1~2 times basic timeout
+		time.Sleep(time.Duration(num) * electionTimeout)
 		rf.muForHeartbeat.Lock()
 		if rf.heartbeatExist == false {
-			go rf.candidateState()
+			go rf.candidateState(rf.currenTerm)
 			break
 		}
-
-		// Your code here to check if a leader election should
-		// be started and to randomize sleeping time using
-		// time.Sleep().
 		rf.heartbeatExist = false
 		rf.muForHeartbeat.Unlock()
 	}
 }
-func (rf *Raft) candidateState() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	rf.currenTerm++
-	rf.votedFor = rf.me
-
-	cnt := 1
-	do := make(chan bool, len(rf.peers))
-	for key, _ := range rf.peers {
-		if key != rf.me {
-			go func(key int, do chan<- bool) {
-				args := RequestVoteArgs{
-					term:         rf.currenTerm,
-					candidateId:  rf.me,
-					lastLogIndex: len(rf.log),
-					lastLogTerm:  rf.log[len(rf.log)-1].term,
-				}
-				reply := RequestVoteReply{
-					term:        0,
-					voteGranted: false,
-				}
-				rf.sendRequestVote(key, &args, &reply)
-				if reply.voteGranted {
-					cnt++
-				}
-				do <- true
-			}(key, do)
-		}
-	}
-	for range rf.peers {
-		<-do
-	}
-	rf.muForHeartbeat.Lock()
-	defer rf.muForHeartbeat.Unlock()
-	if rf.currenTerm <= rf.heartbeatTerm && rf.heartbeatExist {
-		go rf.followState()
-	}
-	if float32(cnt) > float32(len(rf.peers))/2 {
-		go rf.leaderState()
-	} else {
-		go rf.candidateState()
-	}
-}
 
 func (rf *Raft) leaderState() {
-
+	fmt.Println("term ", rf.currenTerm, " ", rf.me, " become leader")
+	rf.mu.Lock()
+	rf.state = leader
+	rf.mu.Unlock()
+	go rf.sendHeartbeat()
 }
 
-func (rf *Raft) followState() {
-	go rf.ticker()
+func (rf *Raft) sendHeartbeat() {
+	for rf.killed() == false {
+		//check if the server a leader
+		rf.muState.Lock()
+		if rf.state != leader {
+			rf.muState.Unlock()
+			return
+		}
+		rf.muState.Unlock()
+
+		//send heartbeat to all peers
+		for key, _ := range rf.peers {
+			if key != rf.me {
+				go func(key int) {
+					args := AppendEntriesArgs{
+						Term:         rf.currenTerm,
+						LeaderId:     rf.me,
+						PrevLogIndex: len(rf.log),
+						PrevLogTerm:  rf.log[len(rf.log)-1].term,
+						Entries:      nil,
+						LeaderCommit: 0,
+					}
+					reply := AppendEntriesReply{
+						Term:    0,
+						Success: false,
+					}
+					rf.sendAppendEntries(key, &args, &reply)
+				}(key)
+			}
+		}
+		time.Sleep(heartbeatTimeout)
+	}
+
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -270,10 +370,26 @@ func (rf *Raft) followState() {
 // for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
+	rf := &Raft{
+		mu:             sync.RWMutex{},
+		peers:          peers,
+		persister:      persister,
+		me:             me,
+		dead:           0,
+		muState:        sync.Mutex{},
+		state:          follower,
+		muForHeartbeat: sync.Mutex{},
+		heartbeatExist: true,
+		stopCandidate:  nil,
+		becomeLeader:   nil,
+		currenTerm:     0,
+		votedFor:       0,
+		log:            nil,
+		commitIndex:    0,
+		lastApplied:    0,
+		nextIndex:      0,
+		matchIndex:     0,
+	}
 
 	// Your initialization code here (2A, 2B, 2C).
 
@@ -281,7 +397,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	go rf.followState()
+	go rf.followerState()
 
 	return rf
 }
