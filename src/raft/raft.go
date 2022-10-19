@@ -94,8 +94,8 @@ type Raft struct {
 }
 
 type LogEntry struct {
-	term    int
-	command Command
+	Term    int
+	Command Command
 }
 
 type Command struct {
@@ -104,8 +104,6 @@ type Command struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	rf.mu.RLock()
-	defer rf.mu.RUnlock()
 	var term int
 	if rf.currenTerm == 0 {
 		term = 1
@@ -212,24 +210,24 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) candidateState(thisTerm int) {
-	rf.muState.Lock()
+	//rf.muState.Lock()
 	rf.state = candidate
-	rf.muState.Unlock()
-
-	rf.mu.Lock()
+	//rf.muState.Unlock()
+	//
+	//rf.mu.Lock()
 	rf.currenTerm = thisTerm + 1
-	fmt.Println("term ", rf.currenTerm, " ", rf.me, " start election")
+	//fmt.Println("term ", rf.currenTerm, " ", rf.me, " start election")
 	rf.votedFor = rf.me
 	rf.stopCandidate = make(chan bool)
 	rf.becomeLeader = make(chan bool)
-	rf.mu.Unlock()
+	//rf.mu.Unlock()
 
 	vote := make(chan bool, len(rf.peers))
 	for key, _ := range rf.peers {
 		if key != rf.me {
 			go func(key int) {
-				rf.mu.RLock()
-				defer rf.mu.RUnlock()
+				//rf.mu.RLock()
+				//defer rf.mu.RUnlock()
 				args := RequestVoteArgs{
 					Term:         rf.currenTerm,
 					CandidateId:  rf.me,
@@ -237,27 +235,29 @@ func (rf *Raft) candidateState(thisTerm int) {
 					LastLogTerm:  0,
 				}
 				if len(rf.log) > 0 {
-					args.LastLogTerm = rf.log[len(rf.log)-1].term
+					args.LastLogTerm = rf.log[len(rf.log)-1].Term
 				}
 				reply := RequestVoteReply{
 					Term:        0,
 					VoteGranted: false,
 				}
-				fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " request a vote from ", key)
+				//fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " request a vote from ", key)
 				rf.sendRequestVote(key, &args, &reply)
 				if reply.VoteGranted {
 					vote <- true
-					fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 vote")
+					//fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 vote")
 				} else {
 					vote <- false
-					fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 refuse")
+					//fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 refuse")
 				}
 			}(key)
 		}
 	}
 
 	go func(vote chan bool) {
-		num := float32(rand.Intn(10))*0.1 + 1 // 1~2 times basic timeout
+		rand.Seed(time.Now().Unix())
+		num := float32(rand.Intn(5)) + 1 // 1~2 times basic timeout
+		println(num)
 		select {
 		case <-rf.stopCandidate: //receive stop candidate
 			close(vote)
@@ -265,9 +265,7 @@ func (rf *Raft) candidateState(thisTerm int) {
 		case <-rf.becomeLeader:
 		case <-time.After(time.Duration(num) * electionTimeout): // set election timeout to close vote chan
 			close(vote)
-			rf.mu.RLock()
 			go rf.candidateState(rf.currenTerm - 1)
-			rf.mu.RUnlock()
 		}
 	}(vote)
 
@@ -286,16 +284,16 @@ func (rf *Raft) candidateState(thisTerm int) {
 		}
 		voteCnt++
 		if voteCnt == len(rf.peers) {
-			close(vote)
+			return
 		}
 	}
 
 }
 
 func (rf *Raft) followerState() {
-	rf.mu.Lock()
+	//rf.mu.Lock()
 	rf.state = follower
-	rf.mu.Unlock()
+	//rf.mu.Unlock()
 	go rf.ticker()
 }
 
@@ -304,35 +302,39 @@ func (rf *Raft) followerState() {
 func (rf *Raft) ticker() {
 	rf.heartbeatExist = true
 	for rf.killed() == false {
-		num := float32(rand.Intn(10))*0.1 + 1 // 1~2 times basic timeout
-		time.Sleep(time.Duration(num) * electionTimeout)
-		rf.muForHeartbeat.Lock()
+		//rf.muForHeartbeat.Lock()
 		if rf.heartbeatExist == false {
 			go rf.candidateState(rf.currenTerm)
 			break
+		} else {
+			//fmt.Println(rf.me, " get heartBeat")
 		}
 		rf.heartbeatExist = false
-		rf.muForHeartbeat.Unlock()
+		//rf.muForHeartbeat.Unlock()
+		rand.Seed(int64(rf.me))
+		num := float32(rand.Intn(5)) + 1 // 1~2 times basic timeout
+		println(num)
+		time.Sleep(time.Duration(num) * electionTimeout)
 	}
 }
 
 func (rf *Raft) leaderState() {
 	fmt.Println("term ", rf.currenTerm, " ", rf.me, " become leader")
-	rf.mu.Lock()
+	//rf.mu.Lock()
 	rf.state = leader
-	rf.mu.Unlock()
+	//rf.mu.Unlock()
 	go rf.sendHeartbeat()
 }
 
 func (rf *Raft) sendHeartbeat() {
 	for rf.killed() == false {
 		//check if the server a leader
-		rf.muState.Lock()
+		//rf.muState.Lock()
 		if rf.state != leader {
 			rf.muState.Unlock()
 			return
 		}
-		rf.muState.Unlock()
+		//rf.muState.Unlock()
 
 		//send heartbeat to all peers
 		for key, _ := range rf.peers {
@@ -342,9 +344,12 @@ func (rf *Raft) sendHeartbeat() {
 						Term:         rf.currenTerm,
 						LeaderId:     rf.me,
 						PrevLogIndex: len(rf.log),
-						PrevLogTerm:  rf.log[len(rf.log)-1].term,
+						PrevLogTerm:  0,
 						Entries:      nil,
 						LeaderCommit: 0,
+					}
+					if len(rf.log) > 0 {
+						args.PrevLogTerm = rf.log[len(rf.log)-1].Term
 					}
 					reply := AppendEntriesReply{
 						Term:    0,

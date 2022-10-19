@@ -24,8 +24,6 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	rf.mu.RLock()
-	fmt.Println(args)
 	if rf.currenTerm < args.Term {
 		rf.muForHeartbeat.Lock()
 		rf.heartbeatExist = true
@@ -37,11 +35,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 		reply.Term = rf.currenTerm
 	} else {
-		fmt.Println(rf.me, " refuse ", args.CandidateId, " in term ", args.Term)
+		//fmt.Println(rf.me, " refuse ", args.CandidateId, " in term ", args.Term)
 		reply.VoteGranted = false
 		reply.Term = rf.currenTerm
 	}
-	rf.mu.RUnlock()
 }
 
 // example code to send a RequestVote RPC to a server.
