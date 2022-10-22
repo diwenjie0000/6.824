@@ -24,14 +24,19 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if rf.currenTerm < args.Term {
+		if rf.state == candidate {
+			rf.stopCandidate <- true
+		}
 		rf.muForHeartbeat.Lock()
 		rf.heartbeatExist = true
 		rf.muForHeartbeat.Unlock()
-
 		fmt.Println(rf.me, " vote for ", args.CandidateId, " in term ", args.Term)
 		rf.currenTerm = args.Term
 		rf.votedFor = args.CandidateId
+		rf.state = follower
 		reply.VoteGranted = true
 		reply.Term = rf.currenTerm
 	} else {
