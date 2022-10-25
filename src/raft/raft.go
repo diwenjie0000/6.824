@@ -69,15 +69,13 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	muState sync.Mutex
-	state   int //state of server
+	state int //state of server
 
-	muForHeartbeat sync.Mutex
 	heartbeatExist bool
 
-	//stop candidate
-	stopCandidate chan bool
-	becomeLeader  chan bool
+	//control stop
+	becomeFollower chan bool
+	becomeLeader   chan bool
 
 	//Persistent state
 	currenTerm int        //latest term server has seen
@@ -104,14 +102,9 @@ type Command struct {
 // GetState return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	var term int
 	rf.mu.RLock()
 	defer rf.mu.RUnlock()
-	if rf.currenTerm == 0 {
-		term = 1
-	} else {
-		term = rf.currenTerm
-	}
+	term := rf.currenTerm
 	isLeader := rf.state == leader
 	return term, isLeader
 }
@@ -223,13 +216,13 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) candidateState(thisTerm int) {
+func (rf *Raft) candidateState() {
 	rf.mu.Lock()
 	rf.state = candidate
-	rf.currenTerm = thisTerm + 1
+	rf.currenTerm = rf.currenTerm + 1
 	fmt.Println("term ", rf.currenTerm, " ", rf.me, " start election")
 	rf.votedFor = rf.me
-	rf.stopCandidate = make(chan bool)
+	rf.becomeFollower = make(chan bool)
 	rf.becomeLeader = make(chan bool)
 	rf.mu.Unlock()
 	vote := make(chan bool, len(rf.peers))
@@ -247,19 +240,27 @@ func (rf *Raft) candidateState(thisTerm int) {
 					args.LastLogTerm = rf.log[len(rf.log)-1].Term
 				}
 				reply := RequestVoteReply{
-					Term:        0,
+					Term:        -1,
 					VoteGranted: false,
+					Me:          -1,
 				}
 				rf.mu.RUnlock()
 				fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " request a vote from ", key)
-				rf.sendRequestVote(key, &args, &reply)
+				ok := rf.sendRequestVote(key, &args, &reply)
 				rf.mu.RLock()
-				if reply.VoteGranted {
-					vote <- true
-					fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 vote")
+				if ok {
+					if reply.VoteGranted {
+						vote <- true
+						fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 vote from ", reply.Me, " in term ", reply.Term)
+					} else {
+						vote <- false
+						fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 refuse from ", reply.Me, " in term ", reply.Term)
+						if reply.Term > rf.currenTerm {
+							rf.becomeFollower <- true
+						}
+					}
 				} else {
-					vote <- false
-					fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 refuse")
+					fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " cannot contract ", key)
 				}
 				rf.mu.RUnlock()
 			}(key)
@@ -270,12 +271,12 @@ func (rf *Raft) candidateState(thisTerm int) {
 		rand.Seed(int64(rf.me) * time.Now().Unix())
 		num := rand.Intn(150) // 1~2 times basic timeout
 		select {
-		case <-rf.stopCandidate: //receive stop candidate
+		case <-rf.becomeFollower: //receive stop candidate
 			go rf.followerState()
 		case <-rf.becomeLeader:
 		case <-time.After(time.Duration(num)*time.Millisecond + electionTimeout): // set election timeout to close vote chan
 			fmt.Println(rf.me, " election timeout")
-			go rf.candidateState(rf.currenTerm - 1)
+			go rf.candidateState()
 		}
 	}()
 
@@ -302,6 +303,7 @@ func (rf *Raft) candidateState(thisTerm int) {
 
 func (rf *Raft) followerState() {
 	rf.mu.Lock()
+	fmt.Println(rf.me, " become follower")
 	rf.state = follower
 	rf.mu.Unlock()
 	go rf.ticker()
@@ -310,17 +312,18 @@ func (rf *Raft) followerState() {
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
+	fmt.Println(rf.me, " start ticker")
 	rf.heartbeatExist = true
 	for rf.killed() == false {
-		rf.muForHeartbeat.Lock()
+		rf.mu.Lock()
 		if rf.heartbeatExist == false {
-			go rf.candidateState(rf.currenTerm)
+			go rf.candidateState()
+			rf.mu.Unlock()
 			break
-		} else {
-			fmt.Println(rf.me, " get heartBeat")
 		}
+		fmt.Println(rf.me, " get heartBeat")
 		rf.heartbeatExist = false
-		rf.muForHeartbeat.Unlock()
+		rf.mu.Unlock()
 		rand.Seed(int64(rf.me) * time.Now().Unix())
 		num := rand.Intn(150) // 1~2 times basic timeout
 		time.Sleep(time.Duration(num)*time.Millisecond + electionTimeout)
@@ -336,34 +339,63 @@ func (rf *Raft) leaderState() {
 }
 
 func (rf *Raft) sendHeartbeat() {
-	for rf.killed() == false {
-		//send heartbeat to all peers
-		for key := range rf.peers {
-			if key != rf.me {
-				go func(key int) {
-					args := AppendEntriesArgs{
-						Term:         rf.currenTerm,
-						LeaderId:     rf.me,
-						PrevLogIndex: len(rf.log),
-						PrevLogTerm:  0,
-						Entries:      nil,
-						LeaderCommit: 0,
-					}
-					if len(rf.log) > 0 {
-						args.PrevLogTerm = rf.log[len(rf.log)-1].Term
-					}
-					reply := AppendEntriesReply{
-						Term:    0,
-						Success: false,
-					}
-					rf.sendAppendEntries(key, &args, &reply)
-				}(key)
-			}
-		}
-		time.Sleep(heartbeatTimeout)
-	}
 	rf.mu.Lock()
-	rf.state = follower
+	rf.becomeFollower = make(chan bool)
+	rf.mu.Unlock()
+Loop:
+	for rf.killed() == false {
+		select {
+		case <-rf.becomeFollower:
+			fmt.Println("1111111111111111111")
+			go rf.followerState()
+			break Loop
+		default:
+			for key := range rf.peers {
+				if key != rf.me {
+					rf.mu.RLock()
+					fmt.Println("term ", rf.currenTerm, " ", rf.me, " sent a heartbeat to ", key)
+					rf.mu.RUnlock()
+					go func(key int) {
+						if rf.state != leader {
+							return
+						}
+						rf.mu.RLock()
+						args := AppendEntriesArgs{
+							Term:         rf.currenTerm,
+							LeaderId:     rf.me,
+							PrevLogIndex: len(rf.log),
+							PrevLogTerm:  0,
+							Entries:      nil,
+							LeaderCommit: 0,
+						}
+						if len(rf.log) > 0 {
+							args.PrevLogTerm = rf.log[len(rf.log)-1].Term
+						}
+						reply := AppendEntriesReply{
+							Term:    0,
+							Success: false,
+						}
+						rf.mu.RUnlock()
+						ok := rf.sendAppendEntries(key, &args, &reply)
+						rf.mu.Lock()
+						if !ok {
+							fmt.Println("term ", rf.currenTerm, " ", "leader ", rf.me, " cannot contract ", key)
+						}
+						if reply.Term > rf.currenTerm {
+							fmt.Println("term ", rf.currenTerm, " ", "leader ", rf.me, " is less than ", key)
+							rf.becomeFollower <- true
+						}
+						rf.mu.Unlock()
+					}(key)
+				}
+			}
+			time.Sleep(heartbeatTimeout)
+		}
+		//send heartbeat to all peers
+	}
+	fmt.Println("2222222222222")
+	rf.mu.Lock()
+	close(rf.becomeFollower)
 	rf.mu.Unlock()
 }
 
@@ -384,11 +416,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		persister:      persister,
 		me:             me,
 		dead:           0,
-		muState:        sync.Mutex{},
 		state:          follower,
-		muForHeartbeat: sync.Mutex{},
 		heartbeatExist: true,
-		stopCandidate:  nil,
+		becomeFollower: nil,
 		becomeLeader:   nil,
 		currenTerm:     0,
 		votedFor:       0,

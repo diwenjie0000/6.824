@@ -1,5 +1,7 @@
 package raft
 
+import "fmt"
+
 type AppendEntriesArgs struct {
 	Term         int        //leader’s term
 	LeaderId     int        //so follower can redirect clients
@@ -15,14 +17,26 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.muForHeartbeat.Lock()
-	rf.heartbeatExist = true
-	rf.muForHeartbeat.Unlock()
 	rf.mu.Lock()
-	if rf.state == candidate && args.Term >= rf.currenTerm {
-		rf.stopCandidate <- true
+	rf.heartbeatExist = true
+	if args.Term >= rf.currenTerm {
 		rf.currenTerm = args.Term
+		if rf.state == candidate {
+			rf.becomeFollower <- true
+			rf.state = follower
+		}
+		if args.Term > rf.currenTerm && rf.state == leader {
+			rf.becomeFollower <- true
+			fmt.Println(rf.me, " need to convert from leader to follower")
+			rf.state = follower
+		}
+		reply.Term = rf.currenTerm
+		reply.Success = true
+	} else {
+		reply.Term = rf.currenTerm
+		reply.Success = false
 	}
+
 	rf.mu.Unlock()
 }
 

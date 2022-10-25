@@ -19,20 +19,18 @@ type RequestVoteReply struct {
 	// Your data here (2A).'
 	Term        int  //currentTerm, for candidate to update itself
 	VoteGranted bool //true means candidate received vote
+	Me          int
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	if rf.currenTerm < args.Term {
-		if rf.state == candidate {
-			rf.stopCandidate <- true
-		}
-		rf.muForHeartbeat.Lock()
-		rf.heartbeatExist = true
-		rf.muForHeartbeat.Unlock()
+	if rf.currenTerm < args.Term && rf.state != follower {
+		rf.becomeFollower <- true
+	}
+	fmt.Println(rf.me, " get a request vote from ", args.CandidateId, " in term ", args.Term)
+	if rf.currenTerm < args.Term || (rf.currenTerm == args.Term && rf.votedFor == args.CandidateId) {
 		fmt.Println(rf.me, " vote for ", args.CandidateId, " in term ", args.Term)
 		rf.currenTerm = args.Term
 		rf.votedFor = args.CandidateId
@@ -44,6 +42,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		reply.Term = rf.currenTerm
 	}
+	reply.Me = rf.me
+	rf.mu.Unlock()
 }
 
 // example code to send a RequestVote RPC to a server.
