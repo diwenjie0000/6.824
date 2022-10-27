@@ -20,7 +20,6 @@ package raft
 import (
 	"6.824/labgob"
 	"bytes"
-	"fmt"
 	"math/rand"
 	"time"
 
@@ -205,7 +204,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
-	fmt.Println(rf.me, " get killed")
+	//fmt.Println(rf.me, " get killed")
 	rf.mu.Lock()
 	rf.state = follower
 	rf.mu.Unlock()
@@ -220,7 +219,7 @@ func (rf *Raft) candidateState() {
 	rf.mu.Lock()
 	rf.state = candidate
 	rf.currenTerm = rf.currenTerm + 1
-	fmt.Println("term ", rf.currenTerm, " ", rf.me, " start election")
+	//fmt.Println("term ", rf.currenTerm, " ", rf.me, " start election")
 	rf.votedFor = rf.me
 	rf.becomeFollower = make(chan bool)
 	rf.becomeLeader = make(chan bool)
@@ -245,22 +244,22 @@ func (rf *Raft) candidateState() {
 					Me:          -1,
 				}
 				rf.mu.RUnlock()
-				fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " request a vote from ", key)
+				//fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " request a vote from ", key)
 				ok := rf.sendRequestVote(key, &args, &reply)
 				rf.mu.RLock()
 				if ok {
 					if reply.VoteGranted {
 						vote <- true
-						fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 vote from ", reply.Me, " in term ", reply.Term)
+						//fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 vote from ", reply.Me, " in term ", reply.Term)
 					} else {
 						vote <- false
-						fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 refuse from ", reply.Me, " in term ", reply.Term)
+						//fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 refuse from ", reply.Me, " in term ", reply.Term)
 						if reply.Term > rf.currenTerm {
 							rf.becomeFollower <- true
 						}
 					}
 				} else {
-					fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " cannot contract ", key)
+					//fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " cannot contract ", key)
 				}
 				rf.mu.RUnlock()
 			}(key)
@@ -275,7 +274,7 @@ func (rf *Raft) candidateState() {
 			go rf.followerState()
 		case <-rf.becomeLeader:
 		case <-time.After(time.Duration(num)*time.Millisecond + electionTimeout): // set election timeout to close vote chan
-			fmt.Println(rf.me, " election timeout")
+			//fmt.Println(rf.me, " election timeout")
 			go rf.candidateState()
 		}
 	}()
@@ -303,7 +302,7 @@ func (rf *Raft) candidateState() {
 
 func (rf *Raft) followerState() {
 	rf.mu.Lock()
-	fmt.Println(rf.me, " become follower")
+	//fmt.Println(rf.me, " become follower")
 	rf.state = follower
 	rf.mu.Unlock()
 	go rf.ticker()
@@ -312,7 +311,7 @@ func (rf *Raft) followerState() {
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
-	fmt.Println(rf.me, " start ticker")
+	//fmt.Println(rf.me, " start ticker")
 	rf.heartbeatExist = true
 	for rf.killed() == false {
 		rf.mu.Lock()
@@ -321,7 +320,7 @@ func (rf *Raft) ticker() {
 			rf.mu.Unlock()
 			break
 		}
-		fmt.Println(rf.me, " get heartBeat")
+		//fmt.Println(rf.me, " get heartBeat")
 		rf.heartbeatExist = false
 		rf.mu.Unlock()
 		rand.Seed(int64(rf.me) * time.Now().Unix())
@@ -331,7 +330,7 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) leaderState() {
-	fmt.Println("term ", rf.currenTerm, " ", rf.me, " become leader")
+	//fmt.Println("term ", rf.currenTerm, " ", rf.me, " become leader")
 	rf.mu.Lock()
 	rf.state = leader
 	rf.mu.Unlock()
@@ -340,20 +339,20 @@ func (rf *Raft) leaderState() {
 
 func (rf *Raft) sendHeartbeat() {
 	rf.mu.Lock()
-	rf.becomeFollower = make(chan bool)
+	rf.becomeFollower = make(chan bool, 5)
 	rf.mu.Unlock()
 Loop:
 	for rf.killed() == false {
 		select {
 		case <-rf.becomeFollower:
-			fmt.Println("1111111111111111111")
+			//fmt.Println("1111111111111111111")
 			go rf.followerState()
 			break Loop
 		default:
 			for key := range rf.peers {
 				if key != rf.me {
 					rf.mu.RLock()
-					fmt.Println("term ", rf.currenTerm, " ", rf.me, " sent a heartbeat to ", key)
+					//fmt.Println("term ", rf.currenTerm, " ", rf.me, " sent a heartbeat to ", key)
 					rf.mu.RUnlock()
 					go func(key int) {
 						if rf.state != leader {
@@ -379,10 +378,10 @@ Loop:
 						ok := rf.sendAppendEntries(key, &args, &reply)
 						rf.mu.Lock()
 						if !ok {
-							fmt.Println("term ", rf.currenTerm, " ", "leader ", rf.me, " cannot contract ", key)
+							//fmt.Println("term ", rf.currenTerm, " ", "leader ", rf.me, " cannot contract ", key)
 						}
 						if reply.Term > rf.currenTerm {
-							fmt.Println("term ", rf.currenTerm, " ", "leader ", rf.me, " is less than ", key)
+							//fmt.Println("term ", rf.currenTerm, " ", "leader ", rf.me, " is less than ", key)
 							rf.becomeFollower <- true
 						}
 						rf.mu.Unlock()
@@ -393,7 +392,7 @@ Loop:
 		}
 		//send heartbeat to all peers
 	}
-	fmt.Println("2222222222222")
+	//fmt.Println("2222222222222")
 	rf.mu.Lock()
 	close(rf.becomeFollower)
 	rf.mu.Unlock()

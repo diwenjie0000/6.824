@@ -1,7 +1,5 @@
 package raft
 
-import "fmt"
-
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
@@ -29,16 +27,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.currenTerm < args.Term && rf.state != follower {
 		rf.becomeFollower <- true
 	}
-	fmt.Println(rf.me, " get a request vote from ", args.CandidateId, " in term ", args.Term)
+	//fmt.Println(rf.me, " get a request vote from ", args.CandidateId, " in term ", args.Term)
 	if rf.currenTerm < args.Term || (rf.currenTerm == args.Term && rf.votedFor == args.CandidateId) {
-		fmt.Println(rf.me, " vote for ", args.CandidateId, " in term ", args.Term)
+		//fmt.Println(rf.me, " vote for ", args.CandidateId, " in term ", args.Term)
 		rf.currenTerm = args.Term
 		rf.votedFor = args.CandidateId
 		rf.state = follower
 		reply.VoteGranted = true
 		reply.Term = rf.currenTerm
 	} else {
-		fmt.Println(rf.me, " refuse ", args.CandidateId, " in term ", args.Term)
+		//fmt.Println(rf.me, " refuse ", args.CandidateId, " in term ", args.Term)
 		reply.VoteGranted = false
 		reply.Term = rf.currenTerm
 	}
