@@ -20,7 +20,6 @@ package raft
 import (
 	"6.824/labgob"
 	"bytes"
-	"math/rand"
 	"time"
 
 	//	"bytes"
@@ -215,120 +214,6 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) candidateState() {
-	rf.mu.Lock()
-	rf.state = candidate
-	rf.currenTerm = rf.currenTerm + 1
-	//fmt.Println("term ", rf.currenTerm, " ", rf.me, " start election")
-	rf.votedFor = rf.me
-	rf.becomeFollower = make(chan bool)
-	rf.becomeLeader = make(chan bool)
-	rf.mu.Unlock()
-	vote := make(chan bool, len(rf.peers))
-	for key := range rf.peers {
-		if key != rf.me {
-			go func(key int) {
-				rf.mu.RLock()
-				args := RequestVoteArgs{
-					Term:         rf.currenTerm,
-					CandidateId:  rf.me,
-					LastLogIndex: len(rf.log),
-					LastLogTerm:  0,
-				}
-				if len(rf.log) > 0 {
-					args.LastLogTerm = rf.log[len(rf.log)-1].Term
-				}
-				reply := RequestVoteReply{
-					Term:        -1,
-					VoteGranted: false,
-					Me:          -1,
-				}
-				rf.mu.RUnlock()
-				//fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " request a vote from ", key)
-				ok := rf.sendRequestVote(key, &args, &reply)
-				rf.mu.RLock()
-				if ok {
-					if reply.VoteGranted {
-						vote <- true
-						//fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 vote from ", reply.Me, " in term ", reply.Term)
-					} else {
-						vote <- false
-						//fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " receives 1 refuse from ", reply.Me, " in term ", reply.Term)
-						if reply.Term > rf.currenTerm {
-							rf.becomeFollower <- true
-						}
-					}
-				} else {
-					//fmt.Println("term ", rf.currenTerm, " ", "candidate ", rf.me, " cannot contract ", key)
-				}
-				rf.mu.RUnlock()
-			}(key)
-		}
-	}
-
-	go func() {
-		rand.Seed(int64(rf.me) * time.Now().Unix())
-		num := rand.Intn(150) // 1~2 times basic timeout
-		select {
-		case <-rf.becomeFollower: //receive stop candidate
-			go rf.followerState()
-		case <-rf.becomeLeader:
-		case <-time.After(time.Duration(num)*time.Millisecond + electionTimeout): // set election timeout to close vote chan
-			//fmt.Println(rf.me, " election timeout")
-			go rf.candidateState()
-		}
-	}()
-
-	//count the result of voting, and the chan guarantee the sync
-	voteGrantedCnt := 1 // vote for itself
-	needVote := len(rf.peers) / 2
-	voteCnt := 1
-	for result := range vote {
-		if result == true {
-			voteGrantedCnt++
-		}
-		if voteGrantedCnt > needVote {
-			rf.becomeLeader <- true
-			go rf.leaderState()
-			return
-		}
-		voteCnt++
-		if voteCnt == len(rf.peers) {
-			return
-		}
-	}
-
-}
-
-func (rf *Raft) followerState() {
-	rf.mu.Lock()
-	//fmt.Println(rf.me, " become follower")
-	rf.state = follower
-	rf.mu.Unlock()
-	go rf.ticker()
-}
-
-// The ticker go routine starts a new election if this peer hasn't received
-// heartsbeats recently.
-func (rf *Raft) ticker() {
-	//fmt.Println(rf.me, " start ticker")
-	rf.heartbeatExist = true
-	for rf.killed() == false {
-		rf.mu.Lock()
-		if rf.heartbeatExist == false {
-			go rf.candidateState()
-			rf.mu.Unlock()
-			break
-		}
-		//fmt.Println(rf.me, " get heartBeat")
-		rf.heartbeatExist = false
-		rf.mu.Unlock()
-		rand.Seed(int64(rf.me) * time.Now().Unix())
-		num := rand.Intn(150) // 1~2 times basic timeout
-		time.Sleep(time.Duration(num)*time.Millisecond + electionTimeout)
-	}
-}
-
 func (rf *Raft) leaderState() {
 	//fmt.Println("term ", rf.currenTerm, " ", rf.me, " become leader")
 	rf.mu.Lock()
@@ -351,13 +236,7 @@ Loop:
 		default:
 			for key := range rf.peers {
 				if key != rf.me {
-					rf.mu.RLock()
-					//fmt.Println("term ", rf.currenTerm, " ", rf.me, " sent a heartbeat to ", key)
-					rf.mu.RUnlock()
 					go func(key int) {
-						if rf.state != leader {
-							return
-						}
 						rf.mu.RLock()
 						args := AppendEntriesArgs{
 							Term:         rf.currenTerm,
@@ -375,11 +254,8 @@ Loop:
 							Success: false,
 						}
 						rf.mu.RUnlock()
-						ok := rf.sendAppendEntries(key, &args, &reply)
+						rf.sendAppendEntries(key, &args, &reply)
 						rf.mu.Lock()
-						if !ok {
-							//fmt.Println("term ", rf.currenTerm, " ", "leader ", rf.me, " cannot contract ", key)
-						}
 						if reply.Term > rf.currenTerm {
 							//fmt.Println("term ", rf.currenTerm, " ", "leader ", rf.me, " is less than ", key)
 							rf.becomeFollower <- true
