@@ -20,6 +20,7 @@ package raft
 import (
 	"6.824/labgob"
 	"bytes"
+	"math/rand"
 	"time"
 
 	//	"bytes"
@@ -70,6 +71,7 @@ type Raft struct {
 	state int //state of server
 
 	heartbeatExist bool
+	heartbeat      chan bool
 
 	//control stop
 	becomeFollower chan bool
@@ -105,6 +107,12 @@ func (rf *Raft) GetState() (int, bool) {
 	term := rf.currenTerm
 	isLeader := rf.state == leader
 	return term, isLeader
+}
+
+func (rf *Raft) getElectionTimeout() time.Duration {
+	rand.Seed(int64(rf.me) * time.Now().Unix())
+	num := rand.Intn(150)
+	return time.Duration(num)*time.Millisecond + electionTimeout
 }
 
 // save Raft's persistent state to stable storage,
@@ -212,66 +220,6 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
-}
-
-func (rf *Raft) leaderState() {
-	//fmt.Println("term ", rf.currenTerm, " ", rf.me, " become leader")
-	rf.mu.Lock()
-	rf.state = leader
-	rf.mu.Unlock()
-	go rf.sendHeartbeat()
-}
-
-func (rf *Raft) sendHeartbeat() {
-	rf.mu.Lock()
-	rf.becomeFollower = make(chan bool, 5)
-	rf.mu.Unlock()
-Loop:
-	for rf.killed() == false {
-		select {
-		case <-rf.becomeFollower:
-			//fmt.Println("1111111111111111111")
-			go rf.followerState()
-			break Loop
-		default:
-			for key := range rf.peers {
-				if key != rf.me {
-					go func(key int) {
-						rf.mu.RLock()
-						args := AppendEntriesArgs{
-							Term:         rf.currenTerm,
-							LeaderId:     rf.me,
-							PrevLogIndex: len(rf.log),
-							PrevLogTerm:  0,
-							Entries:      nil,
-							LeaderCommit: 0,
-						}
-						if len(rf.log) > 0 {
-							args.PrevLogTerm = rf.log[len(rf.log)-1].Term
-						}
-						reply := AppendEntriesReply{
-							Term:    0,
-							Success: false,
-						}
-						rf.mu.RUnlock()
-						rf.sendAppendEntries(key, &args, &reply)
-						rf.mu.Lock()
-						if reply.Term > rf.currenTerm {
-							//fmt.Println("term ", rf.currenTerm, " ", "leader ", rf.me, " is less than ", key)
-							rf.becomeFollower <- true
-						}
-						rf.mu.Unlock()
-					}(key)
-				}
-			}
-			time.Sleep(heartbeatTimeout)
-		}
-		//send heartbeat to all peers
-	}
-	//fmt.Println("2222222222222")
-	rf.mu.Lock()
-	close(rf.becomeFollower)
-	rf.mu.Unlock()
 }
 
 // Make the service or tester wants to create a Raft server. the ports

@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"math/rand"
 	"time"
 )
 
@@ -47,24 +46,26 @@ func (rf *Raft) requestVote(key int, vote chan<- bool) {
 	ok := rf.sendRequestVote(key, &args, &reply)
 	rf.mu.RLock()
 	if ok {
-		if reply.VoteGranted {
-			vote <- true
+		if reply.Term > rf.currenTerm {
+			rf.becomeFollower <- true
 		} else {
-			vote <- false
+			if reply.VoteGranted {
+				vote <- true
+			} else {
+				vote <- false
+			}
 		}
 	}
 	rf.mu.RUnlock()
 }
 
 func (rf *Raft) candidateTransition() {
-	rand.Seed(int64(rf.me) * time.Now().Unix())
-	num := rand.Intn(150) // 1~2 times basic timeout
 	select {
 	case <-rf.becomeFollower: //receive stop candidate
 		go rf.followerState()
 	case <-rf.becomeLeader:
 		go rf.leaderState()
-	case <-time.After(time.Duration(num)*time.Millisecond + electionTimeout): // set election timeout to close vote chan
+	case <-time.After(rf.getElectionTimeout()): // set election timeout to close vote chan
 		go rf.candidateState()
 	}
 }

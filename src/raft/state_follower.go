@@ -1,13 +1,11 @@
 package raft
 
 import (
-	"math/rand"
 	"time"
 )
 
 func (rf *Raft) followerState() {
 	rf.mu.Lock()
-	//fmt.Println(rf.me, " become follower")
 	rf.state = follower
 	rf.mu.Unlock()
 	go rf.ticker()
@@ -16,7 +14,6 @@ func (rf *Raft) followerState() {
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
-	//fmt.Println(rf.me, " start ticker")
 	rf.heartbeatExist = true
 	for rf.killed() == false {
 		rf.mu.Lock()
@@ -25,11 +22,8 @@ func (rf *Raft) ticker() {
 			rf.mu.Unlock()
 			break
 		}
-		//fmt.Println(rf.me, " get heartBeat")
 		rf.heartbeatExist = false
 		rf.mu.Unlock()
-		rand.Seed(int64(rf.me) * time.Now().Unix())
-		num := rand.Intn(150) // 1~2 times basic timeout
-		time.Sleep(time.Duration(num)*time.Millisecond + electionTimeout)
+		time.Sleep(rf.getElectionTimeout())
 	}
 }
