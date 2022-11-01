@@ -1,11 +1,13 @@
 package raft
 
 import (
+	"fmt"
 	"time"
 )
 
 func (rf *Raft) followerState() {
 	rf.mu.Lock()
+	fmt.Println("term", rf.currenTerm, rf.me, "become follower")
 	rf.state = follower
 	rf.mu.Unlock()
 	go rf.ticker()

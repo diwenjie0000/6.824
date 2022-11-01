@@ -1,15 +1,17 @@
 package raft
 
 import (
+	"fmt"
 	"time"
 )
 
 func (rf *Raft) candidateState() {
+	fmt.Println("term", rf.currenTerm, rf.me, "start candidate")
 	rf.mu.Lock()
 	rf.state = candidate
 	rf.currenTerm = rf.currenTerm + 1
 	rf.votedFor = rf.me
-	rf.becomeFollower = make(chan bool)
+	rf.becomeFollower = make(chan bool, 5)
 	rf.becomeLeader = make(chan bool)
 	rf.mu.Unlock()
 	vote := make(chan bool, len(rf.peers))
@@ -40,7 +42,6 @@ func (rf *Raft) requestVote(key int, vote chan<- bool) {
 	reply := RequestVoteReply{
 		Term:        -1,
 		VoteGranted: false,
-		Me:          -1,
 	}
 	rf.mu.RUnlock()
 	ok := rf.sendRequestVote(key, &args, &reply)
@@ -79,7 +80,9 @@ func (rf *Raft) voteCount(vote <-chan bool) {
 			voteGrantedCnt++
 		}
 		if voteGrantedCnt > needVote {
+			rf.mu.Lock()
 			rf.becomeLeader <- true
+			rf.mu.Unlock()
 			return
 		}
 		voteCnt++

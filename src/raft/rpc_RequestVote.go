@@ -17,29 +17,33 @@ type RequestVoteReply struct {
 	// Your data here (2A).'
 	Term        int  //currentTerm, for candidate to update itself
 	VoteGranted bool //true means candidate received vote
-	Me          int
 }
 
-// example RequestVote RPC handler.
+// RequestVote  RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if rf.currenTerm < args.Term && rf.state != follower {
 		rf.becomeFollower <- true
 	}
-	if rf.currenTerm < args.Term || (rf.currenTerm == args.Term && rf.votedFor == args.CandidateId) {
+	if (rf.currenTerm < args.Term || (rf.currenTerm == args.Term && rf.votedFor == args.CandidateId)) &&
+		(len(rf.log) == 0 || isAtLeastUpToDate(args.LastLogTerm, args.LastLogIndex, rf.log[len(rf.log)-1].Term, len(rf.log)-1)) {
 		rf.currenTerm = args.Term
 		rf.votedFor = args.CandidateId
 		rf.state = follower
 		reply.VoteGranted = true
 		reply.Term = rf.currenTerm
 	} else {
-		//fmt.Println(rf.me, " refuse ", args.CandidateId, " in term ", args.Term)
 		reply.VoteGranted = false
 		reply.Term = rf.currenTerm
+		return
 	}
-	reply.Me = rf.me
-	rf.mu.Unlock()
+
+}
+
+// if a is at least up-to-date b
+func isAtLeastUpToDate(aTerm, aIdx, bTerm, bIdx int) bool {
+	return aTerm > bTerm || aTerm == bTerm && aIdx >= bIdx
 }
 
 // example code to send a RequestVote RPC to a server.

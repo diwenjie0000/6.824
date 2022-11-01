@@ -20,6 +20,7 @@ package raft
 import (
 	"6.824/labgob"
 	"bytes"
+	"fmt"
 	"math/rand"
 	"time"
 
@@ -73,7 +74,6 @@ type Raft struct {
 	heartbeatExist bool
 	heartbeat      chan bool
 
-	//control stop
 	becomeFollower chan bool
 	becomeLeader   chan bool
 
@@ -83,20 +83,19 @@ type Raft struct {
 	log        []LogEntry //log entries; each entry contains command for state machine, and term when entry was received by leader
 
 	//Volatile state
-	commitIndex int //index of the highest log entry known to be committed
-	lastApplied int //index of the highest log entry applied to state machine
+	agreeSet    map[int]int //index of the log which agreed by more than half followers and index larger than commitIndex
+	commitIndex int         //index of the highest log entry known to be committed
+	lastApplied int         //index of the highest log entry applied to state machine
 
 	//Leader only volatile state
-	nextIndex  int //for each server, index of the next log entry to send to that server
-	matchIndex int //for each server, index of the highest log entry known to be replicated on server
+	nextIndex  []int //for each server, index of the next log entry to send to that server
+	matchIndex []int //for each server, index of the highest log entry known to be replicated on server
+	applyCh    chan ApplyMsg
 }
 
 type LogEntry struct {
-	Term    int
-	Command Command
-}
-
-type Command struct {
+	Term   int
+	LogCmd interface{}
 }
 
 // GetState return currentTerm and whether this server
@@ -190,13 +189,20 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	//isLeader := false
-
-	// Your code here (2B).
-
-	return index, term, false
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	index := len(rf.log)
+	term := rf.currenTerm
+	if rf.state == leader {
+		rf.log = append(rf.log, LogEntry{
+			Term:   rf.currenTerm,
+			LogCmd: command,
+		})
+		go rf.startAgreement()
+		fmt.Println("leader", rf.me, "promise", command, "index and term", index, term)
+		return index + 1, term, true
+	}
+	return -1, -1, false
 }
 
 // Kill the tester doesn't halt goroutines created by Raft after each test,
@@ -246,10 +252,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		currenTerm:     0,
 		votedFor:       0,
 		log:            nil,
-		commitIndex:    0,
+		commitIndex:    -1,
 		lastApplied:    0,
-		nextIndex:      0,
-		matchIndex:     0,
+		nextIndex:      nil,
+		matchIndex:     nil,
+		applyCh:        applyCh,
 	}
 
 	// Your initialization code here (2A, 2B, 2C).
